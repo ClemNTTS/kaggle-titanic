@@ -2,13 +2,16 @@ import pandas as pd
 import numpy as np
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
-from keras.models import Sequential
-from keras.layers import Dense, Input, Dropout
-from keras.optimizers import Adam
-from keras.callbacks import EarlyStopping
-from keras.callbacks import ReduceLROnPlateau
-from sklearn.metrics import precision_recall_curve
-from keras.layers import LeakyReLU
+from sklearn.metrics import precision_recall_curve, accuracy_score
+from sklearn.ensemble import RandomForestClassifier  # Importation de RandomForestClassifier
+
+def extract_ticket_number(ticket):
+    ticket_parts = ticket.split(" ")
+    last_part = ticket_parts[-1]
+    if last_part.isdigit():
+        return int(last_part)
+    else:
+        return np.nan
 
 # Load data
 train_data = pd.read_csv('train.csv')
@@ -17,15 +20,35 @@ test_data = pd.read_csv('test.csv')
 y = train_data['Survived']
 
 # Clean data
-train_data = train_data.drop(['Ticket', 'Cabin', 'Embarked'], axis=1)
-test_data = test_data.drop(['Ticket', 'Cabin', 'Embarked'], axis=1)
+train_data['ticket_number'] = train_data['Ticket'].apply(extract_ticket_number)
+train_data['ticket_items'] = train_data['Ticket'].apply(lambda x: ' '.join(x.split(" ")[0:-1]))
 
-# Fill missing values in 'Age' column with mean age
+test_data['ticket_number'] = test_data['Ticket'].apply(extract_ticket_number)
+test_data['ticket_items'] = test_data['Ticket'].apply(lambda x: ' '.join(x.split(" ")[0:-1]))
+
+train_data['Cabin_ABC'] = train_data['Cabin'].str.extract(r'([A-Za-z]+)', expand=False)
+train_data['Cabin_Num'] = train_data['Cabin'].str.extract(r'(\d+)', expand=False).astype(float)
+
+test_data['Cabin_ABC'] = test_data['Cabin'].str.extract(r'([A-Za-z]+)', expand=False)
+test_data['Cabin_Num'] = test_data['Cabin'].str.extract(r'(\d+)', expand=False).astype(float)
+
+train_data['Cabin_Num'] = train_data['Cabin_Num'].fillna(train_data['Cabin_Num'].median())
+test_data['Cabin_Num'] = test_data['Cabin_Num'].fillna(test_data['Cabin_Num'].median())
+
+train_data = train_data.drop(['Ticket', 'Cabin'], axis=1)
+test_data = test_data.drop(['Ticket', 'Cabin'], axis=1)
+
 train_data['Age'] = train_data['Age'].fillna(train_data['Age'].mean())
 test_data['Age'] = test_data['Age'].fillna(test_data['Age'].mean())
 
 train_data['Fare'] = train_data['Fare'].fillna(train_data['Fare'].mean())
 test_data['Fare'] = test_data['Fare'].fillna(test_data['Fare'].mean())
+
+train_data['ticket_number'] = train_data['ticket_number'].fillna(train_data['ticket_number'].median())
+test_data['ticket_number'] = test_data['ticket_number'].fillna(test_data['ticket_number'].median())
+
+train_data['FamilySize'] = train_data['SibSp'] + train_data['Parch'] + 1
+test_data['FamilySize'] = test_data['SibSp'] + test_data['Parch'] + 1
 
 # Set PassengerId as index for both datasets
 train_data = train_data.set_index('PassengerId')
@@ -35,53 +58,46 @@ test_data = test_data.set_index('PassengerId')
 combined_data = pd.concat([train_data.drop('Survived', axis=1), test_data], axis=0)
 
 # Encode categorical variables
-combined_data = pd.get_dummies(combined_data, columns=['Name', 'Sex'], drop_first=True)
+combined_data = pd.get_dummies(combined_data, columns=['Name', 'Sex', 'ticket_items', 'Cabin_ABC', 'Embarked'], drop_first=True)
 
 # Scale 'Age' and 'Fare' columns
 scaler = StandardScaler()
-combined_data[['Age', 'Fare']] = scaler.fit_transform(combined_data[['Age', 'Fare']])
+combined_data[['Age', 'Fare', 'ticket_number', 'Cabin_Num', 'FamilySize']] = scaler.fit_transform(combined_data[['Age', 'Fare', 'ticket_number', 'Cabin_Num', 'FamilySize']])
 
 # Sépare les données d'entraînement et de test à nouveau
 train_data = combined_data.iloc[:len(train_data)]
 test_data = combined_data.iloc[len(train_data):]
 
-
-
-# Create and train the model
-model = Sequential()
-model.add(Input(shape=(train_data.shape[1],)))
-model.add(Dense(32, activation=LeakyReLU(alpha=0.01)))
-model.add(Dropout(0.2))
-model.add(Dense(16, activation=LeakyReLU(alpha=0.01)))
-model.add(Dropout(0.2))
-model.add(Dense(1, activation='sigmoid'))
-
-model.compile(optimizer=Adam(learning_rate=0.0001), loss='binary_crossentropy', metrics=['accuracy'])
-
-early_stopping = EarlyStopping(monitor='val_loss', patience=5)
-reduce_lr = ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=5, min_lr=1e-6)
-
-
+# Train-test split
 x_train, x_test, y_train, y_test = train_test_split(train_data, y, test_size=0.2, shuffle=True, stratify=y)
 
-model.fit(x_train, y_train, epochs=2000, batch_size=32, callbacks=[early_stopping, reduce_lr], validation_split=0.1, verbose=1)
+# Créer le modèle de forêt aléatoire
+model = RandomForestClassifier(n_estimators=500)  # n_estimators définit le nombre d'arbres dans la forêt
 
-y_pred_probs = model.predict(x_test).flatten()
+# Entraîner le modèle
+model.fit(x_train, y_train)
+
+# Faire des prédictions
+y_pred_probs = model.predict_proba(x_test)[:, 1]  # Récupérer les probabilités de classe positive
 precisions, recalls, thresholds = precision_recall_curve(y_test, y_pred_probs)
 
-# Choose threshold based on highest F1-score or balance between precision and recall
+# Choisir le seuil basé sur le meilleur F1-score
 f1_scores = 2 * (precisions * recalls) / (precisions + recalls)
 optimal_idx = np.argmax(f1_scores)
 best_threshold = thresholds[optimal_idx]
 print(f'Best threshold: {best_threshold}')
 
-model.evaluate(x_test, y_test)
+# Évaluer le modèle
+y_pred = (y_pred_probs > best_threshold).astype(int)  # Utiliser le meilleur seuil
+print(f'Accuracy: {accuracy_score(y_test, y_pred)}')
 
-predictions = model.predict(test_data)
-predictions = (predictions > 0.5).astype(int)
+# Prédire sur les données de test
+test_pred_probs = model.predict_proba(test_data)[:, 1]
+test_predictions = (test_pred_probs > best_threshold).astype(int)
+
 submission_df = pd.DataFrame({
     'PassengerId': test_data.index,
-    'Survived': predictions.flatten()
+    'Survived': test_predictions.flatten()
 })
 
 print(submission_df.head())
