@@ -3,82 +3,95 @@ import numpy as np
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import precision_recall_curve, accuracy_score
-from sklearn.ensemble import RandomForestClassifier  # Importation de RandomForestClassifier
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import RandomizedSearchCV
 
-def extract_ticket_number(ticket):
-    ticket_parts = ticket.split(" ")
-    last_part = ticket_parts[-1]
-    if last_part.isdigit():
-        return int(last_part)
-    else:
-        return np.nan
-
-# Load data
-train_data = pd.read_csv('train.csv')
+df = pd.read_csv('train.csv')
 test_data = pd.read_csv('test.csv')
 
-y = train_data['Survived']
+Y = df['Survived']
+df.drop(['Survived'], axis=1, inplace=True)
 
-# Clean data
-train_data['ticket_number'] = train_data['Ticket'].apply(extract_ticket_number)
-train_data['ticket_items'] = train_data['Ticket'].apply(lambda x: ' '.join(x.split(" ")[0:-1]))
+def preprocess_data(df):
 
-test_data['ticket_number'] = test_data['Ticket'].apply(extract_ticket_number)
-test_data['ticket_items'] = test_data['Ticket'].apply(lambda x: ' '.join(x.split(" ")[0:-1]))
+    df.set_index('PassengerId', inplace=True)
 
-train_data['Cabin_ABC'] = train_data['Cabin'].str.extract(r'([A-Za-z]+)', expand=False)
-train_data['Cabin_Num'] = train_data['Cabin'].str.extract(r'(\d+)', expand=False).astype(float)
+    df['Age'].fillna(df['Age'].median(), inplace=True)
+    df['Pclass'].fillna(df['Pclass'].median(), inplace=True)
+    df['SibSp'].fillna(df['SibSp'].median(), inplace=True)
+    df['Parch'].fillna(df['Parch'].median(), inplace=True)
+    df['Sex'].fillna('unknow', inplace=True)
 
-test_data['Cabin_ABC'] = test_data['Cabin'].str.extract(r'([A-Za-z]+)', expand=False)
-test_data['Cabin_Num'] = test_data['Cabin'].str.extract(r'(\d+)', expand=False).astype(float)
+    df['Cabin'] = df['Cabin'].str.extract('([A-Z])')
+    df['Cabin'].fillna('unknow', inplace=True)
+    df['Cabin'] = pd.factorize(df['Cabin'])[0]
 
-train_data['Cabin_Num'] = train_data['Cabin_Num'].fillna(train_data['Cabin_Num'].median())
-test_data['Cabin_Num'] = test_data['Cabin_Num'].fillna(test_data['Cabin_Num'].median())
+    df['Name'] = df['Name'].str.split(',').str[1]
+    df['Name'] = df['Name'].str.split('.').str[0]
+    df['Name'].fillna('unknow', inplace=True)
 
-train_data = train_data.drop(['Ticket', 'Cabin'], axis=1)
-test_data = test_data.drop(['Ticket', 'Cabin'], axis=1)
+    df['Sex'] = pd.factorize(df['Sex'])[0]
+    df['Name'] = pd.factorize(df['Name'])[0]
+    df['Embarked'] = pd.factorize(df['Embarked'])[0]
 
-train_data['Age'] = train_data['Age'].fillna(train_data['Age'].mean())
-test_data['Age'] = test_data['Age'].fillna(test_data['Age'].mean())
+    scaler = StandardScaler()
+    df['Pclass'] = scaler.fit_transform(df[['Pclass']])
+    df['Age'] = scaler.fit_transform(df[['Age']])
+    df['SibSp'] = scaler.fit_transform(df[['SibSp']])
+    df['Parch'] = scaler.fit_transform(df[['Parch']])
+    df['Fare'] = scaler.fit_transform(df[['Fare']])
+    df['Cabin'] = scaler.fit_transform(df[['Cabin']])
+    df['Sex'] = scaler.fit_transform(df[['Sex']])
+    df['Embarked'] = scaler.fit_transform(df[['Embarked']])
+    df['Name'] = scaler.fit_transform(df[['Name']])
 
-train_data['Fare'] = train_data['Fare'].fillna(train_data['Fare'].mean())
-test_data['Fare'] = test_data['Fare'].fillna(test_data['Fare'].mean())
+    df['Ticket'].fillna('unknow', inplace=True)
+    df['Ticket'] = df['Ticket'].str.split(' ').str[0]
+    df['Ticket'] = df['Ticket'].apply(lambda x: "unknown" if x.isdigit() else x)
+    df['Ticket'] = pd.factorize(df['Ticket'])[0]
+    df['Ticket'] = scaler.fit_transform(df[['Ticket']])
+    return df
 
-train_data['ticket_number'] = train_data['ticket_number'].fillna(train_data['ticket_number'].median())
-test_data['ticket_number'] = test_data['ticket_number'].fillna(test_data['ticket_number'].median())
+df = preprocess_data(df)
 
-train_data['FamilySize'] = train_data['SibSp'] + train_data['Parch'] + 1
-test_data['FamilySize'] = test_data['SibSp'] + test_data['Parch'] + 1
+test_data = preprocess_data(test_data)
 
-# Set PassengerId as index for both datasets
-train_data = train_data.set_index('PassengerId')
-test_data = test_data.set_index('PassengerId')
+X_train, X_test, y_train, y_test = train_test_split(df, Y, test_size=0.2)
 
-# Combine train and test data
-combined_data = pd.concat([train_data.drop('Survived', axis=1), test_data], axis=0)
+clf = RandomForestClassifier(n_estimators=1000)
 
-# Encode categorical variables
-combined_data = pd.get_dummies(combined_data, columns=['Name', 'Sex', 'ticket_items', 'Cabin_ABC', 'Embarked'], drop_first=True)
+# Comments are for my personnaly best result
+param_grid = {
+    'n_estimators': [100, 210, 320, 430,540], #100
+    'max_depth': [30, 35, 40, 50, 60, 70, 80, 90, 100], #50
+    'min_samples_split': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], #8
+    'min_samples_leaf': [3, 4, 5, 10, 20, 30, 40], #5
+    'bootstrap': [True, False] #False
+}
 
-# Scale 'Age' and 'Fare' columns
-scaler = StandardScaler()
-combined_data[['Age', 'Fare', 'ticket_number', 'Cabin_Num', 'FamilySize']] = scaler.fit_transform(combined_data[['Age', 'Fare', 'ticket_number', 'Cabin_Num', 'FamilySize']])
+random_search = RandomizedSearchCV(estimator=clf, param_distributions=param_grid,
+                                   n_iter=1000, cv=5, verbose=2, n_jobs=-1)
 
-# Sépare les données d'entraînement et de test à nouveau
-train_data = combined_data.iloc[:len(train_data)]
-test_data = combined_data.iloc[len(train_data):]
 
-# Train-test split
-x_train, x_test, y_train, y_test = train_test_split(train_data, y, test_size=0.2, shuffle=True, stratify=y)
+random_search.fit(X_train, y_train)
 
-# Créer le modèle de forêt aléatoire
-model = RandomForestClassifier(n_estimators=500)  # n_estimators définit le nombre d'arbres dans la forêt
 
-# Entraîner le modèle
-model.fit(x_train, y_train)
+print("Best Hyperparameters:", random_search.best_params_)
 
-# Faire des prédictions
-y_pred_probs = model.predict_proba(x_test)[:, 1]  # Récupérer les probabilités de classe positive
+best_model = random_search.best_estimator_
+best_model.fit(X_train, y_train)
+
+# Prédictions avec le modèle optimisé
+y_pred = best_model.predict(X_test)
+print('Optimized Accuracy:', accuracy_score(y_test, y_pred))
+
+
+y_pred = best_model.predict(X_test)
+
+print('Accuracy:', accuracy_score(y_test, y_pred))
+
+
+y_pred_probs = best_model.predict_proba(X_test)[:, 1]
 precisions, recalls, thresholds = precision_recall_curve(y_test, y_pred_probs)
 
 # Choisir le seuil basé sur le meilleur F1-score
@@ -87,13 +100,9 @@ optimal_idx = np.argmax(f1_scores)
 best_threshold = thresholds[optimal_idx]
 print(f'Best threshold: {best_threshold}')
 
-# Évaluer le modèle
-y_pred = (y_pred_probs > best_threshold).astype(int)  # Utiliser le meilleur seuil
-print(f'Accuracy: {accuracy_score(y_test, y_pred)}')
-
 # Prédire sur les données de test
-test_pred_probs = model.predict_proba(test_data)[:, 1]
-test_predictions = (test_pred_probs > best_threshold).astype(int)
+test_pred_probs = best_model.predict_proba(test_data)[:, 1]
+test_predictions = (test_pred_probs > 0.5).astype(int)
 
 submission_df = pd.DataFrame({
     'PassengerId': test_data.index,
